@@ -1,0 +1,13 @@
+# AI Pattern Search — Python dependencies
+# Install with: pip3 install -r requirements.txt
+# On IBM i, ibm_db_dbi is pre-installed with the DB2 PASE libraries
+
+# Web framework
+flask>=2.2.0
+
+# AWS
+boto3>=1.35.0
+
+# IBM i DB2 — available via yum on IBM i PASE
+# yum install python3-ibm_db
+# ibm_db_dbi  (included with ibm_db)
