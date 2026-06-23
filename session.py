@@ -96,16 +96,17 @@ def delete(sid: str) -> None:
         log.warning("Failed to delete session %s: %s", sid, e)
 
 
-def append(sid: str, query: str, rug_ids: list, count: int) -> None:
+def append(sid: str, query: str, rug_ids: list, count: int, expanded_query: str = "") -> None:
     """
     Convenience function — load, append one history entry, save.
     Called after each successful search in conversation mode.
     """
     data = load(sid)
     data["history"].append({
-        "query":   query,
-        "count":   count,
-        "rug_ids": rug_ids,
+        "query":          query,
+        "count":          count,
+        "rug_ids":        rug_ids,
+        "expanded_query": expanded_query,
     })
     save(sid, data)
 
@@ -118,6 +119,18 @@ def get_history(sid: str) -> list:
 def get_seen_ids(sid: str) -> list:
     """Return all rug IDs seen across the entire session history."""
     return [rid for h in get_history(sid) for rid in h.get("rug_ids", [])]
+
+
+def get_last_expansion(sid: str, query: str) -> str:
+    """
+    Return the expanded query from the most recent history entry that
+    matches the given original query. Used to generate a complementary
+    expansion on load-more. Returns empty string if none found.
+    """
+    for entry in reversed(get_history(sid)):
+        if entry.get("query", "").strip().lower() == query.strip().lower():
+            return entry.get("expanded_query", "")
+    return ""
 
 
 # ------------------------------------------------------------------ #

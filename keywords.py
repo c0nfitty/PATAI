@@ -34,6 +34,8 @@ _cache: list[str] = []
 _cache_loaded_at: float = 0.0
 
 
+
+
 def _load_from_db() -> list[str]:
     try:
         conn   = ibm_db_dbi.connect()
@@ -70,6 +72,10 @@ def _get_keywords() -> list[str]:
 # ------------------------------------------------------------------ #
 #  Public API
 # ------------------------------------------------------------------ #
+def get_all() -> list[str]:
+    """Return the full list of active keywords (lowercased for matching)."""
+    return _get_keywords()
+
 
 def random_sample(n: int = 8) -> list[str]:
     """Return n unique randomly selected active keywords."""
@@ -88,6 +94,97 @@ def refresh() -> None:
     _cache_loaded_at = 0.0
     _get_keywords()
     log.info("Keyword cache manually refreshed")
+
+
+def get_all_with_status() -> list[dict]:
+    """Return all keywords (active and inactive) with status for admin view."""
+    try:
+        conn   = ibm_db_dbi.connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT KEYW, STSCDE FROM MFGDBFA.PATAI_KWDS ORDER BY KEYW"
+        )
+        rows = [{"keyword": row[0].strip(), "active": row[1] == 1} for row in cursor.fetchall()]
+        conn.close()
+        return rows
+    except Exception as e:
+        log.error("Failed to load keywords with status: %s", e)
+        return [{"keyword": kw, "active": True} for kw in _FALLBACK]
+
+
+def add_keyword(kw: str) -> dict:
+    """Insert a new keyword into PATAI_KWDS with active status.
+    Returns {"ok": True} or {"ok": False, "error": "..."}
+    """
+    kw = kw.strip()
+    if not kw:
+        return {"ok": False, "error": "Keyword cannot be empty"}
+    try:
+        conn   = ibm_db_dbi.connect()
+        cursor = conn.cursor()
+        # Check for duplicate (case-insensitive)
+        cursor.execute(
+            "SELECT COUNT(*) FROM MFGDBFA.PATAI_KWDS WHERE UPPER(KEYW) = UPPER(?)",
+            (kw,)
+        )
+        if cursor.fetchone()[0] > 0:
+            conn.close()
+            return {"ok": False, "error": f"'{kw}' already exists"}
+        cursor.execute(
+            "INSERT INTO MFGDBFA.PATAI_KWDS (KWID, KEYW, STSCDE) VALUES (MAPUTIL.guid(), ?, 1) WITH NC",
+            (kw,)
+        )
+        conn.close()
+        refresh()
+        log.info("Keyword added: %s", kw)
+        return {"ok": True}
+    except Exception as e:
+        log.error("Failed to add keyword '%s': %s", kw, e)
+        return {"ok": False, "error": str(e)}
+
+
+def deactivate_keyword(kw: str) -> dict:
+    """Set STSCDE=0 for a keyword (soft delete).
+    Returns {"ok": True} or {"ok": False, "error": "..."}
+    """
+    kw = kw.strip()
+    if not kw:
+        return {"ok": False, "error": "Keyword cannot be empty"}
+    try:
+        conn   = ibm_db_dbi.connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE MFGDBFA.PATAI_KWDS SET STSCDE = 0 WHERE UPPER(KEYW) = UPPER(?) WITH NC",
+            (kw,)
+        )
+        conn.close()
+        refresh()
+        log.info("Keyword deactivated: %s", kw)
+        return {"ok": True}
+    except Exception as e:
+        log.error("Failed to deactivate keyword '%s': %s", kw, e)
+        return {"ok": False, "error": str(e)}
+
+
+def reactivate_keyword(kw: str) -> dict:
+    """Set STSCDE=1 for a previously deactivated keyword."""
+    kw = kw.strip()
+    if not kw:
+        return {"ok": False, "error": "Keyword cannot be empty"}
+    try:
+        conn   = ibm_db_dbi.connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE MFGDBFA.PATAI_KWDS SET STSCDE = 1 WHERE UPPER(KEYW) = UPPER(?) WITH NC",
+            (kw,)
+        )
+        conn.close()
+        refresh()
+        log.info("Keyword reactivated: %s", kw)
+        return {"ok": True}
+    except Exception as e:
+        log.error("Failed to reactivate keyword '%s': %s", kw, e)
+        return {"ok": False, "error": str(e)}
 
 
 # ------------------------------------------------------------------ #

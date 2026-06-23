@@ -14,6 +14,7 @@ All logic lives in the dedicated modules:
 """
 
 
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -80,6 +81,51 @@ def refresh_keywords():
     return jsonify({"ok": True})
 
 
+@app.route("/admin/keywords")
+def admin_keywords():
+    """Keyword taxonomy admin page."""
+    return render_template("admin_keywords.html")
+
+
+@app.route("/admin/keywords/list")
+def admin_keywords_list():
+    """Return all keywords with active/inactive status."""
+    return jsonify(keywords.get_all_with_status())
+
+
+@app.route("/admin/keywords/add", methods=["POST"])
+def admin_keywords_add():
+    """Add a new keyword to PATAI_KWDS."""
+    body = request.get_json() or {}
+    kw   = (body.get("keyword") or "").strip()
+    if not kw:
+        return jsonify({"ok": False, "error": "Missing keyword"}), 400
+    result = keywords.add_keyword(kw)
+    return jsonify(result), (200 if result["ok"] else 400)
+
+
+@app.route("/admin/keywords/deactivate", methods=["POST"])
+def admin_keywords_deactivate():
+    """Deactivate (soft-delete) a keyword."""
+    body = request.get_json() or {}
+    kw   = (body.get("keyword") or "").strip()
+    if not kw:
+        return jsonify({"ok": False, "error": "Missing keyword"}), 400
+    result = keywords.deactivate_keyword(kw)
+    return jsonify(result), (200 if result["ok"] else 400)
+
+
+@app.route("/admin/keywords/reactivate", methods=["POST"])
+def admin_keywords_reactivate():
+    """Reactivate a previously deactivated keyword."""
+    body = request.get_json() or {}
+    kw   = (body.get("keyword") or "").strip()
+    if not kw:
+        return jsonify({"ok": False, "error": "Missing keyword"}), 400
+    result = keywords.reactivate_keyword(kw)
+    return jsonify(result), (200 if result["ok"] else 400)
+
+
 @app.route("/session/delete", methods=["POST"])
 def delete_session():
     """Delete a conversation session file immediately."""
@@ -92,16 +138,46 @@ def delete_session():
 
 @app.route("/feedback", methods=["POST"])
 def post_feedback():
-    """Log a flagged result from the design team."""
+    """Log a flagged result from the design team.
+
+    All suggested metadata edits are queued in the JSONL for a
+    separate batch job — nothing is applied to S3 or the KB here.
+
+    Accepts:
+        rug_id             : str        (required)
+        query              : str
+        reason             : 'not_related' | 'should_rank_higher' | 'other'
+        notes              : str        free-text note
+        keyword_adds       : list[str]  keywords to add to this rug's metadata
+        keyword_removes    : list[str]  keywords to remove from this rug's metadata
+        color_corrections  : dict       {old_name: new_name} color fixes
+    """
     body   = request.get_json() or {}
     rug_id = (body.get("rug_id") or "").strip()
     query  = (body.get("query")  or "").strip()
     reason = (body.get("reason") or "not_related").strip()
+    notes  = (body.get("notes")  or "").strip()
+
+    kw_adds    = [k.strip() for k in (body.get("keyword_adds")    or []) if str(k).strip()]
+    kw_removes = [k.strip() for k in (body.get("keyword_removes") or []) if str(k).strip()]
+    color_corrections = {
+        str(k).strip(): str(v).strip()
+        for k, v in (body.get("color_corrections") or {}).items()
+        if str(k).strip() and str(v).strip() and str(k).strip() != str(v).strip()
+    }
 
     if not rug_id:
         return jsonify({"error": "Missing rug_id"}), 400
 
-    ok = feedback.record(rug_id, query, reason)
+    ok = feedback.record(
+        rug_id,
+        query,
+        reason=reason,
+        notes=notes,
+        keyword_adds=kw_adds or None,
+        keyword_removes=kw_removes or None,
+        color_corrections=color_corrections or None,
+    )
     return jsonify({"ok": ok})
 
 
@@ -141,11 +217,33 @@ def do_search():
     exclude_ids = session.get_seen_ids(sid) if use_convo and sid else []
 
     try:
-        # Optionally expand the query before searching
-        search_query = rag.expand_query(query) if use_expand else query
+        # Extract year filter from query (e.g. "floral from 2015", "2015 floral")
+        year_match  = re.search(r"\b(19|20)\d{2}\b", query)
+        year_filter = year_match.group(0) if year_match else None
+        clean_query = re.sub(r"\b(19|20)\d{2}\b", "", query).strip(" ,.-") if year_filter else query
+        if year_filter:
+            log.info("Year filter extracted: %s — searching on: %r", year_filter, clean_query)
 
-        # Fetch more results when reranking so the reranker has room to work
-        fetch_count = max_results * config.RERANK_FETCH_MULT if use_rerank else max_results
+        # Optionally expand the query before searching.
+        # On load-more (conversation mode with prior history), pass the
+        # previous expansion so Claude picks a complementary set of synonyms.
+        if use_expand:
+            prev_expansion = session.get_last_expansion(sid, query) if use_convo and sid else ""
+            search_query = rag.expand_query(clean_query, previous_expansion=prev_expansion)
+        else:
+            search_query = clean_query
+
+        # Fetch enough candidates to cover dedup losses, excluded seen IDs, and
+        # reranker headroom.  Formula: (desired + already-excluded) × multiplier,
+        # capped at Bedrock's hard limit of 100.
+        fetch_count = min(
+            (max_results + len(exclude_ids)) * config.RERANK_FETCH_MULT,
+            100,
+        )
+
+        # In broad mode, fan out each expanded term as its own Bedrock query
+        # for much better recall.  In exact mode, single query as before.
+        expanded_terms = search_query.split() if use_expand and search_query != clean_query else None
 
         # Run RAG summary and retrieval in parallel
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -153,15 +251,21 @@ def do_search():
                 rag.rag_summarise, search_query,
                 history if use_convo else None
             )
-            fut_rugs = executor.submit(
-                search.retrieve_rugs, search_query, fetch_count, exclude_ids
-            )
+            if expanded_terms:
+                fut_rugs = executor.submit(
+                    search.retrieve_rugs_multi, expanded_terms, fetch_count, exclude_ids, year_filter
+                )
+            else:
+                fut_rugs = executor.submit(
+                    search.retrieve_rugs, search_query, fetch_count, exclude_ids, year_filter
+                )
             summary = fut_summary.result()
             rugs    = fut_rugs.result()
 
-        # Optionally rerank and trim to requested count
+        # Rerank if requested, then trim to exactly max_results in all cases
         if use_rerank and rugs:
-            rugs = search.rerank_rugs(search_query, rugs)[:max_results]
+            rugs = search.rerank_rugs(search_query, rugs)
+        rugs = rugs[:max_results]
 
         # Persist search to session history
         if use_convo and sid and rugs:
@@ -170,6 +274,7 @@ def do_search():
                 query=query,
                 rug_ids=[r["rug_id"] for r in rugs],
                 count=len(rugs),
+                expanded_query=search_query if use_expand else "",
             )
 
         return jsonify({
