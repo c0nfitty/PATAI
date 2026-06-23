@@ -13,10 +13,11 @@ from pathlib import Path
 #  AWS
 # ------------------------------------------------------------------ #
 AWS_REGION        = "us-east-1"
-KNOWLEDGE_BASE_ID = "DY4HCOVIDY"
-IMAGE_BUCKET      = "variety-bucket-514316422605-us-east-1-an"
-JSON_BUCKET       = "result-buckett"
-JSON_PREFIX       = "aws/bedrock/knowledge_bases/ASC-VAR/"
+KNOWLEDGE_BASE_ID = "GHF95PM74D"
+IMAGE_BUCKET      = "maples-prod-pattern-images"
+JSON_BUCKET       = "maples-pattern-meta-2026"
+#JSON_PREFIX       = "aws/bedrock/knowledge_bases/ASC-VAR2/"
+JSON_PREFIX       = ""
 BEDROCK_MODEL_ARN = "arn:aws:bedrock:us-east-1:514316422605:inference-profile/us.anthropic.claude-sonnet-4-6"
 RERANK_MODEL_ARN  = "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0"
 
@@ -39,7 +40,7 @@ ANTHROPIC_URL     = "https://api.anthropic.com/v1/messages"
 # ------------------------------------------------------------------ #
 APP_DIR           = Path("/apps/python/patternai")
 SESSIONS_DIR      = APP_DIR / "sessions"
-FEEDBACK_LOG      = APP_DIR / "bin/feedback.jsonl"
+FEEDBACK_LOG      = APP_DIR / "feedback.jsonl"
 LOG_FILE          = APP_DIR / "bin/app.log"
 
 # ------------------------------------------------------------------ #
@@ -51,7 +52,7 @@ KEYWORDS_CACHE_TTL_SECS = 3600
 #  Flask
 # ------------------------------------------------------------------ #
 FLASK_HOST        = "0.0.0.0"
-FLASK_PORT        = 5000
+FLASK_PORT        = 5005
 FLASK_DEBUG       = False
 
 # ------------------------------------------------------------------ #
